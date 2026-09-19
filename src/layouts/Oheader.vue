@@ -46,10 +46,11 @@ const requestClose = async (fromTray = false) => {
   if (minimizeToTray.value && !fromTray) {
     try {
       await invoke('hide_main_window_to_tray')
+      return
     } catch (e) {
-      console.error('最小化到托盘失败:', e)
+      // 托盘不可用时退回正常关闭流程，避免窗口隐藏后无法唤回
+      console.error('最小化到托盘失败，改为正常关闭:', e)
     }
-    return
   }
 
   const isRunningTask =

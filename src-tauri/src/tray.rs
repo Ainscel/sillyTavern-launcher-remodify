@@ -126,8 +126,25 @@ pub fn set_tray_visible(app: &AppHandle, visible: bool) {
 ///
 /// 由前端点击关闭按钮时调用（前端未授予 `core:window:allow-hide` 权限，
 /// 且所有窗口操作统一经由 Rust 后端）。只隐藏窗口，不会停止酒馆进程。
+///
+/// 若托盘图标不可用则返回错误，前端会退回正常的关闭流程——
+/// 否则窗口隐藏后将没有任何入口可以重新唤回。
 #[tauri::command]
 pub fn hide_main_window_to_tray(app: AppHandle) -> Result<(), String> {
+    let tray = {
+        let state = app.state::<TrayState>();
+        let guard = state.icon.lock().unwrap();
+        guard.as_ref().cloned()
+    };
+    let Some(tray) = tray else {
+        return Err("系统托盘不可用，已取消最小化到托盘".to_string());
+    };
+
+    // 隐藏前确保托盘图标可见，避免窗口“消失”后无法唤回
+    if let Err(e) = tray.set_visible(true) {
+        return Err(format!("显示托盘图标失败: {e}"));
+    }
+
     let Some(window) = app.get_webview_window("main") else {
         return Err("主窗口不存在".to_string());
     };
