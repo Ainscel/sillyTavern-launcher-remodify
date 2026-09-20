@@ -1238,43 +1238,89 @@ pub async fn get_tavern_version(app: AppHandle) -> Result<crate::types::LocalTav
 
 // ─── ST 配置文件路径 ────────────────────────────────────────────────────────────
 
+/// 当前选中酒馆版本的根目录。未选择版本时返回 None。
+fn resolve_st_dir(app: &AppHandle, config: &crate::types::AppConfig) -> Option<PathBuf> {
+    let version_item = &config.sillytavern.version;
+    if version_item.version.is_empty() {
+        return None;
+    }
+    if !version_item.path.is_empty() {
+        return Some(PathBuf::from(&version_item.path));
+    }
+    let data_dir = get_config_path(app).parent()?.to_path_buf();
+    Some(data_dir.join("sillytavern").join(&version_item.version))
+}
+
+/// 酒馆**实际读取**的那份 config.yaml 的路径。纯计算，不碰文件系统。
+/// 返回 (配置路径, 是否 local 模式)。
+///
+/// 这个路径必须和 `start_sillytavern` 传参后酒馆自身解析出来的结果一致，
+/// 否则「酒馆配置」页编辑的是一份酒馆根本不读的文件，改了什么都不会生效。
+/// SillyTavern 的取值规则（src/command-line.js）：
+///   `configPath = isGlobal ? <appPaths.data>/config.yaml : (cliArguments.configPath ?? './config.yaml')`
+/// 而本启动器**从不传 `--global`**，所以：
+///   - global 数据模式：启动时传了 `--configPath`，酒馆读 `<data>/st_data/config.yaml`
+///   - local  数据模式：不传参，酒馆读工作目录（酒馆根目录）下的 `config.yaml`
+///
+/// 注意 local 模式下配置文件就在酒馆根目录，而不是 `data/` 子目录里——
+/// 配置文件和数据目录是两回事，别照着 `get_st_data_dir` 去拼。
+///
+/// 与 `get_effective_st_config_path` 拆开，是为了让「启动前解析端口」这类场景
+/// 只读不写——否则酒馆版本目录不存在时会先被凭空建出来，
+/// 把后面本该报的「版本目录不存在」给掩盖掉。
+fn resolve_st_config_path(app: &AppHandle) -> (PathBuf, bool) {
+    let config = read_app_config_from_disk(app);
+
+    if config.data_mode == "local" {
+        if let Some(st_dir) = resolve_st_dir(app, &config) {
+            return (st_dir.join("config.yaml"), true);
+        }
+    }
+
+    // global 模式，以及 local 模式但还没选版本（无处可放）的兜底
+    let data_dir = get_config_path(app)
+        .parent()
+        .unwrap_or(&PathBuf::from("."))
+        .to_path_buf();
+    (data_dir.join("st_data").join("config.yaml"), false)
+}
+
+/// 需要读写配置时用的版本：在 `resolve_st_config_path` 的基础上确保文件存在。
+fn get_effective_st_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let (path, local_mode) = resolve_st_config_path(app);
+
+    if let Some(parent) = path.parent() {
+        // 只补建数据目录。local 模式下父目录是酒馆版本目录，
+        // 它不存在说明版本本身有问题，不该在这里凭空造一个出来。
+        if !parent.exists() && !local_mode {
+            std::fs::create_dir_all(parent).map_err(|e| format!("无法创建配置目录：{}", e))?;
+        }
+    }
+
+    if !path.exists() {
+        // local 模式下这份配置同时决定酒馆的数据目录（local 模式不传 --dataRoot，
+        // 酒馆会读配置里的 dataRoot），而模板里写的是 `./`。
+        // 直接用模板会让数据落到酒馆根目录，和 get_st_data_dir 约定的 `<st_dir>/data` 对不上，
+        // 所以这里按酒馆自己的默认值改成 `./data`。
+        // global 模式的 dataRoot 会被 --dataRoot 覆盖，模板内容无所谓，保持原样不动。
+        let content = if local_mode {
+            DEFAULT_CONFIG_TEMPLATE.replacen("dataRoot: ./", "dataRoot: ./data", 1)
+        } else {
+            DEFAULT_CONFIG_TEMPLATE.to_string()
+        };
+        std::fs::write(&path, content).map_err(|e| format!("无法创建默认配置文件：{}", e))?;
+    }
+
+    Ok(path)
+}
+
 fn get_st_config_path(app: &AppHandle, _version: &str) -> Result<PathBuf, String> {
-    let st_data = crate::utils::get_st_data_dir(app);
-
-    // 自动创建全局数据目录
-    if !st_data.exists() {
-        std::fs::create_dir_all(&st_data).map_err(|e| format!("无法创建全局数据目录：{}", e))?;
-    }
-
-    let global = st_data.join("config.yaml");
-
-    // 如果全局配置不存在，直接使用模板创建
-    if !global.exists() {
-        std::fs::write(&global, DEFAULT_CONFIG_TEMPLATE)
-            .map_err(|e| format!("无法创建默认配置文件：{}", e))?;
-    }
-
-    Ok(global)
+    get_effective_st_config_path(app)
 }
 
 /// 获取全局配置文件路径（不需要版本号）
 fn get_st_global_config_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let st_data = crate::utils::get_st_data_dir(app);
-
-    // 自动创建全局数据目录
-    if !st_data.exists() {
-        std::fs::create_dir_all(&st_data).map_err(|e| format!("无法创建全局数据目录：{}", e))?;
-    }
-
-    let global = st_data.join("config.yaml");
-
-    // 如果全局配置不存在，直接使用模板创建
-    if !global.exists() {
-        std::fs::write(&global, DEFAULT_CONFIG_TEMPLATE)
-            .map_err(|e| format!("无法创建默认配置文件：{}", e))?;
-    }
-
-    Ok(global)
+    get_effective_st_config_path(app)
 }
 
 // ─── ST Config YAML 读写 ────────────────────────────────────────────────────────
@@ -3236,25 +3282,11 @@ fn resolve_tavern_port(app: &AppHandle) -> (u16, PathBuf) {
     /// config.yaml 里没有 port 时酒馆自身的默认值
     const FALLBACK: u16 = 8000;
 
-    let config = read_app_config_from_disk(app);
-
-    let data_dir = match get_config_path(app).parent() {
-        Some(p) => p.to_path_buf(),
-        None => PathBuf::from("."),
-    };
-    let st_dir = if config.sillytavern.version.path.is_empty() {
-        data_dir
-            .join("sillytavern")
-            .join(&config.sillytavern.version.version)
-    } else {
-        PathBuf::from(&config.sillytavern.version.path)
-    };
-
-    let cfg_path = if config.data_mode == "local" {
-        st_dir.join("config.yaml")
-    } else {
-        data_dir.join("st_data").join("config.yaml")
-    };
+    // 复用「酒馆实际读取的那份 config.yaml」的解析逻辑：
+    // 预检端口、就绪探测端口、「酒馆配置」页编辑的文件必须是同一个来源，
+    // 各写一套迟早会对不上（这正是之前端口预检写死 11451 的教训）。
+    // 这里用纯路径版本，不在启动前顺手创建目录/文件。
+    let (cfg_path, _) = resolve_st_config_path(app);
 
     let port = std::fs::read_to_string(&cfg_path)
         .ok()

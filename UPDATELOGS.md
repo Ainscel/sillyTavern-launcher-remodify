@@ -50,6 +50,15 @@
   托盘直接改配置后设置页并不知情，用户下次在设置页动任意开关就会把托盘的修改冲掉。
   现由后端广播 `app-config-changed`，前端刷新本地镜像，保证两边一致。
 - **图标缺失**：设置页「界面主题」处使用了不存在的图标组件 `PhBrowserWindow`，改为 `PhBrowser`。
+- **local 数据模式下「酒馆配置」页改的配置完全不生效**：配置页读写的是
+  `<酒馆目录>/data/config.yaml`，而酒馆在 local 模式下（不传 `--configPath`）
+  实际读的是工作目录下的 `<酒馆目录>/config.yaml`——配置文件并不在 `data/` 子目录里，
+  原先按「数据目录 + config.yaml」去拼，改的是一份酒馆根本不读的文件。
+  现统一为 `get_effective_st_config_path`：global 模式指向 `<data>/st_data/config.yaml`，
+  local 模式指向 `<酒馆目录>/config.yaml`，与酒馆自身的取值规则（`src/command-line.js`）一致。
+  同时 local 模式下新建配置时会写入 `dataRoot: ./data`（而不是模板里的 `./`），
+  避免酒馆据此把数据落到酒馆根目录、与数据目录约定不一致。
+  「启动前端口预检」也改为复用同一套路径解析，不再各写一份。
 
 ### 变更
 
