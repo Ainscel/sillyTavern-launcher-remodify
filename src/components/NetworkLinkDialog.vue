@@ -267,9 +267,18 @@ const fetchIps = async () => {
           }
         })
 
-      const preferredIndex = interfaces.value.findIndex(
-        iface => !iface.is_virtual && iface.is_up && !iface.is_virtual_name && iface.ipv4.length > 0,
-      )
+      // 优先用后端推荐的地址（默认路由所在网卡）来定位默认选中的网卡。
+      // 不要只靠「非虚拟 / 已启用 / 名字不含关键字」去猜——那套判据挡不住
+      // WSL、Hyper-V、VPN 之类的虚拟网卡，默认选中的会是别的设备连不上的地址。
+      const recommended = res.ipv4?.[0]
+      const recommendedIndex = recommended ? interfaces.value.findIndex(iface => iface.ipv4.includes(recommended)) : -1
+
+      const preferredIndex =
+        recommendedIndex >= 0
+          ? recommendedIndex
+          : interfaces.value.findIndex(
+              iface => !iface.is_virtual && iface.is_up && !iface.is_virtual_name && iface.ipv4.length > 0,
+            )
 
       if (preferredIndex >= 0) {
         selectedInterfaceIndex.value = preferredIndex

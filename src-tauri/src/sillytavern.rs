@@ -4594,6 +4594,11 @@ pub async fn get_local_ip_addresses() -> Result<serde_json::Value, String> {
         interfaces.push(iface);
     }
 
+    // 接口来自 HashMap，迭代顺序每个进程都不一样：同样一台机器，这次启动可能是
+    // 「以太网」在前，下次就变成「WSL」在前。不确定的顺序会让下面所有「取第一项」的
+    // 判断跟着漂移，所以先按名称固定下来（顺带让界面里的网卡列表顺序也稳定）。
+    interfaces.sort_by(|a, b| a.name.cmp(&b.name));
+
     // 如果 UDP 探测有结果但接口列表为空，直接返回探测值
     if interfaces.is_empty() {
         let mut fallback_ipv4 = Vec::new();
@@ -4611,18 +4616,36 @@ pub async fn get_local_ip_addresses() -> Result<serde_json::Value, String> {
         }));
     }
 
-    // 首选网卡：优先不是虚拟网卡、状态 Up、含 IPv4 地址的第一项；其次 IPv6；失败则取第一项
-    let mut preferred_index: Option<usize> = None;
-    for (idx, iface) in interfaces.iter().enumerate() {
-        let name_lower = iface.name.to_lowercase();
-        let is_blacklisted_name = name_lower.contains("虚拟") || name_lower.contains("virtual");
-        if !iface.ipv4_addrs.is_empty()
-            && !iface.is_virtual_guess
-            && iface.is_up
-            && !is_blacklisted_name
-        {
-            preferred_index = Some(idx);
-            break;
+    // 首选网卡，按优先级依次尝试：
+    //
+    // 1. **默认路由所在的网卡**。前面的 UDP connect 并不会真的发包，只是让系统按路由表
+    //    挑出「出口网卡」，它手上的地址正是局域网内其他设备能访问到的那个。
+    //    这是唯一可靠的判据——只看「是否虚拟 / 是否 Up / 网卡名关键字」远远不够：
+    //    WSL、Hyper-V、Docker、各类 VPN 的虚拟网卡都可能通过筛选，
+    //    于是复制出来的是 10.0.0.1 / 172.30.x.x 这类别的机器根本连不上的地址。
+    //    唯一的例外是默认路由本身走的是虚拟网卡（VPN / TUN 全局代理），
+    //    那它就不是局域网出口，跳过它交给下面的常规筛选。
+    // 2. 不是虚拟网卡、状态 Up、含 IPv4 地址的第一项。
+    // 3. 再不行看 IPv6。
+    // 4. 都没有就取第一项。
+    let mut preferred_index: Option<usize> = primary_ipv4.as_ref().and_then(|primary| {
+        interfaces.iter().position(|iface| {
+            !iface.is_virtual_guess && iface.ipv4_addrs.iter().any(|ip| ip == primary)
+        })
+    });
+
+    if preferred_index.is_none() {
+        for (idx, iface) in interfaces.iter().enumerate() {
+            let name_lower = iface.name.to_lowercase();
+            let is_blacklisted_name = name_lower.contains("虚拟") || name_lower.contains("virtual");
+            if !iface.ipv4_addrs.is_empty()
+                && !iface.is_virtual_guess
+                && iface.is_up
+                && !is_blacklisted_name
+            {
+                preferred_index = Some(idx);
+                break;
+            }
         }
     }
     if preferred_index.is_none() {
