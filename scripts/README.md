@@ -125,3 +125,61 @@ const publisher = 'SillyTavern Launcher';
 
 - 检查 `package.json` 中的 `prebuild` 和 `tauri:build` 脚本
 - 确保使用正确的构建命令
+
+---
+
+## make-ico.cjs - 多分辨率 ICO 生成脚本
+
+### 功能
+
+从一张 PNG 源图生成多尺寸的 Windows ICO 文件。
+
+### 为什么需要它
+
+- **在线转换站点容易下错文件**：不少站点转换后会先跳到一个自动提交的中转页，直接「保存网页」拿到的是 HTML 而不是 ICO，Windows 打不开也不报错。
+- **单尺寸 ICO 在高 DPI 下会发虚**：Windows 会按缩放比例挑最接近的一帧（100% 用 16、125% 用 20/24、150% 用 24、200% 用 32），尺寸齐全才不会糊。
+- **不依赖 PNG-in-ICO 解码**：内部一律用 32bpp BMP 帧，兼容性最好。
+
+### 使用方法
+
+```bash
+# 生成应用图标（尺寸齐全，含 256）
+node scripts/make-ico.cjs src-tauri/icons/source/app.png src-tauri/icons/icon.ico \
+  --sizes=16,24,32,40,48,64,128,256
+
+# 生成托盘运行态图标（只给托盘用，不需要大尺寸）
+node scripts/make-ico.cjs src-tauri/icons/source/app-running.png src-tauri/icons/icon-running.ico \
+  --sizes=16,24,32,40,48,64
+
+# 只检查源图，不生成（看画布尺寸、alpha 分布、四角像素）
+node scripts/make-ico.cjs src-tauri/icons/source/app.png --analyze
+```
+
+> 当前仓库里的两个 ICO 是在线工具生成的，并非本脚本产出——本脚本作为**可重复、
+> 可校验的替代方案**保留：在线站点一旦流程走错（下载到中转页而不是转换结果）
+> 或只产出单一尺寸，排查起来都很费劲。两种方式产出的文件格式是兼容的。
+
+### 参数
+
+| 参数 | 说明 |
+| ---- | ---- |
+| `--sizes=16,24,32,...` | 要写入 ICO 的尺寸，默认 `16,24,32,48,64,128,256` |
+| `--analyze` | 只分析源图并打印信息，不生成文件 |
+
+### 源图要求
+
+- PNG 格式，8 位深，非隔行扫描
+- 正方形（否则缩放会变形，脚本会警告）
+- 建议背景透明
+
+### 图标对应关系
+
+设计源图放在 `src-tauri/icons/source/`，与它们生成的 ICO 放在一起。
+该目录不在 `bundle.icon` 列表里，不会被打进安装包。
+
+| 源图 | 输出 | 用途 |
+| ---- | ---- | ---- |
+| `src-tauri/icons/source/app.png` | `src-tauri/icons/icon.ico` | 程序/安装包图标；Windows 上 `default_window_icon()` 也取自它，因此同时是**托盘未运行态**图标 |
+| `src-tauri/icons/source/app-running.png` | `src-tauri/icons/icon-running.ico` | **托盘运行态**图标（酒馆服务运行时替换显示，见 `src-tauri/src/tray.rs`） |
+
+> 两张源图的留白比例要保持一致，否则切换运行状态时托盘图标会出现大小跳动。

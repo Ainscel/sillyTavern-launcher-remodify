@@ -173,7 +173,8 @@ SillyTavern-Launcher/
 │   │   ├── logs.rs             # 应用运行日志读写
 │   │   ├── elevation.rs        # Windows UAC 提权辅助
 │   │   └── Cargo.toml          # Rust 依赖
-│   ├── icons/                  # 应用图标（多平台）
+│   ├── icons/                  # 应用图标（多平台），含托盘运行态 icon-running.ico
+│   │   └── source/              # 图标设计源图（不参与打包）
 │   └── tauri.conf.json         # Tauri 配置文件
 │
 ├── data/                       # 运行时数据目录（自动生成）
@@ -489,7 +490,8 @@ SillyTavern-Launcher/
 │   │   ├── logs.rs           # App log read/write
 │   │   ├── elevation.rs      # Windows UAC elevation helper
 │   │   └── Cargo.toml        # Rust dependencies
-│   ├── icons/                 # App icons (multi-platform)
+│   ├── icons/                 # App icons (multi-platform), incl. tray icon-running.ico
+│   │   └── source/            # Icon design sources (not bundled)
 │   └── tauri.conf.json       # Tauri config
 │
 └── data/                       # Runtime data (auto-created)
