@@ -96,6 +96,45 @@ function decodePng(buf) {
   return { w, h, rgba: out }
 }
 
+/** 编码 PNG（8 位 RGBA）。用于导出界面里用的位图 logo。 */
+function encodePng(img) {
+  const { w, h, rgba } = img
+  const raw = Buffer.alloc(h * (w * 4 + 1))
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 4 + 1)] = 0 // filter type 0 (None)
+    rgba.copy(raw, y * (w * 4 + 1) + 1, y * w * 4, (y + 1) * w * 4)
+  }
+
+  const crcTable = []
+  for (let n = 0; n < 256; n++) {
+    let c = n
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+    crcTable[n] = c >>> 0
+  }
+  const crc32 = buf => {
+    let r = 0xffffffff
+    for (let i = 0; i < buf.length; i++) r = crcTable[(r ^ buf[i]) & 0xff] ^ (r >>> 8)
+    return (r ^ 0xffffffff) >>> 0
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0)
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data])
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body), 0)
+    return Buffer.concat([len, body, crc])
+  }
+
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4)
+  ihdr[8] = 8  // bit depth
+  ihdr[9] = 6  // color type: RGBA
+  return Buffer.concat([
+    PNG_SIG,
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ])
+}
+
 /** 统计 alpha 分布，用来判断背景是透明还是实心 */
 function alphaStats(img) {
   let opaque = 0, transparent = 0, partial = 0
@@ -196,13 +235,17 @@ function main() {
   const args = process.argv.slice(2)
   const analyze = args.includes('--analyze')
   const sizesArg = args.find(a => a.startsWith('--sizes='))
+  const pngArg = args.find(a => a.startsWith('--png='))
   const sizes = sizesArg
     ? sizesArg.slice(8).split(',').map(s => parseInt(s, 10)).filter(n => n > 0)
     : [16, 24, 32, 48, 64, 128, 256]
   const files = args.filter(a => !a.startsWith('--'))
 
   if (files.length < 2 && !analyze) {
-    console.error('用法: node scripts/make-ico.cjs <源图.png> <输出.ico> [--sizes=...] [--analyze]')
+    console.error(
+      '用法: node scripts/make-ico.cjs <源图.png> <输出.ico> [--sizes=16,24,...] [--analyze]\n' +
+      '      node scripts/make-ico.cjs <源图.png> <输出.png> --png=256',
+    )
     process.exit(1)
   }
 
@@ -215,6 +258,17 @@ function main() {
   if (analyze) return
   if (src.w !== src.h) console.warn('  警告: 源图不是正方形，缩放后会变形')
 
+  // --png=<边长>：导出单张位图。界面里显示的 logo 走这条路径，
+  // 直接引用 900KB 的设计源图会把前端产物撑大且没必要。
+  if (pngArg) {
+    const size = parseInt(pngArg.slice(6), 10)
+    if (!(size > 0)) throw new Error('--png 需要一个正整数边长')
+    const png = encodePng(resize(src, size, size))
+    fs.writeFileSync(files[1], png)
+    console.log(`输出: ${files[1]}  ${png.length} bytes  ${size}x${size}`)
+    return
+  }
+
   const images = sizes.map(s => resize(src, s, s))
   const ico = encodeIco(images)
   fs.writeFileSync(files[1], ico)
@@ -223,4 +277,4 @@ function main() {
 
 if (require.main === module) main()
 
-module.exports = { decodePng, alphaStats, resize, encodeBmpFrame, encodeIco }
+module.exports = { decodePng, alphaStats, resize, encodeBmpFrame, encodeIco, encodePng }

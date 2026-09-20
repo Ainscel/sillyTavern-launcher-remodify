@@ -1,6 +1,8 @@
 import pkg from '../../package.json'
 import { PhOpenAiLogo, PhGoogleLogo } from '@phosphor-icons/vue'
-import logo from '../assets/logo.svg'
+// 界面内显示的 logo，由 src-tauri/icons/source/app.png 缩放生成
+// （node scripts/make-ico.cjs src-tauri/icons/source/app.png src/assets/logo.png --png=256）
+import logo from '../assets/logo.png'
 
 export default {
   appName: '酒馆启动器GUI',
