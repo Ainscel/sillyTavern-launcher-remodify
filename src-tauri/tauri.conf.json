@@ -17,6 +17,7 @@
         "width": 1200,
         "height": 800,
         "center": true,
+        "visible": false,
         "minWidth": 960,
         "minHeight": 640,
         "maxWidth": 1600,

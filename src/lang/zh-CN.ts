@@ -853,8 +853,8 @@ export default {
     languageAuto: '跟随系统',
     rememberWindow: '记住上次窗口位置',
     rememberWindowDesc: '开启后，下次启动会恢复到上次关闭前的位置',
-    minimizeToTray: '关闭软件时最小化到托盘',
-    minimizeToTrayDesc: '开启后点击关闭按钮只会隐藏到系统托盘，不退出程序，正在运行的酒馆服务与任务不受影响',
+    closeToTrayHint:
+      '托盘图标常驻，关闭主窗口（含 Alt+Tab 窗口列表里的关闭）只会把窗口隐藏到托盘，程序继续在后台运行，酒馆服务与进行中的任务不受影响；需要真正退出请使用托盘菜单中的「退出」。',
     startupAndTray: '启动与托盘',
     autoStartLauncher: '开机自动启动',
     autoStartLauncherDesc: '登录 Windows 后自动启动本启动器，以计划任务方式注册，不会弹出 UAC 权限确认框',
@@ -1069,5 +1069,8 @@ export default {
     launchModeChanged: '酒馆启动模式已切换为「{mode}」',
     launchModeNeedRestart: '启动模式只在酒馆启动时生效，需要重启酒馆后才会应用。是否立即重启？',
     restartNow: '立即重启',
+    unavailableDesc:
+      '系统托盘当前不可用。窗口隐藏后将没有任何入口可以唤回，因此无法执行「关闭到托盘」。是否直接退出程序？',
+    quitAnyway: '直接退出',
   },
 }

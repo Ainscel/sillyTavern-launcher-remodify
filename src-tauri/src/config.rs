@@ -302,14 +302,10 @@ pub async fn get_app_config(app: AppHandle) -> Result<AppConfig, String> {
 #[tauri::command]
 pub async fn save_app_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
     let app_clone = app.clone();
-    // 需要在 config 被 move 进闭包前取出
-    let needs_tray = config.needs_tray();
     tokio::task::spawn_blocking(move || write_app_config_to_disk(&app_clone, &config))
         .await
         .map_err(|e| e.to_string())??;
 
-    // 配置落盘成功后同步托盘图标可见性，保证「设置项」与「实际行为」始终一致
-    crate::tray::set_tray_visible(&app, needs_tray);
     // 启动模式 / 快捷开关可能变了，重建托盘菜单让勾选状态跟上
     crate::tray::refresh_menu(&app);
     Ok(())

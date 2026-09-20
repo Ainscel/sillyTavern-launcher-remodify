@@ -23,7 +23,7 @@ use std::sync::{Mutex, OnceLock};
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
-    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, Wry,
 };
 
@@ -452,13 +452,12 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip(tooltip_text(lang, false, 0))
         .menu(&menu)
-        // 左键单击恢复窗口，右键弹出菜单
-        .show_menu_on_left_click(false)
+        // 左键单击与右键一样弹出菜单；唤出主窗口改用双击，避免单击误触
+        .show_menu_on_left_click(true)
         .on_menu_event(handle_menu_event)
         .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
+            if let TrayIconEvent::DoubleClick {
                 button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
                 ..
             } = event
             {
@@ -478,29 +477,6 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     // 图标刚建好，补一次刷新把状态（可能在创建前就已运行）同步过来
     refresh_menu(app);
     Ok(())
-}
-
-/// 按开关状态显示/隐藏托盘图标。
-///
-/// 关闭时不销毁图标，只切换可见性，便于用户反复开关。
-pub fn set_tray_visible(app: &AppHandle, visible: bool) {
-    if !visible {
-        let existing = {
-            let state = app.state::<TrayState>();
-            let guard = state.icon.lock().unwrap();
-            guard.as_ref().cloned()
-        };
-        if let Some(tray) = existing {
-            if let Err(e) = tray.set_visible(false) {
-                tracing::warn!("隐藏托盘图标失败: {}", e);
-            }
-        }
-        return;
-    }
-
-    if let Err(e) = create_tray(app) {
-        tracing::error!("创建托盘图标失败: {}", e);
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -537,7 +513,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             {
                 tracing::error!("保存「启动时最小化到托盘」失败: {}", e);
             }
-            sync_tray_visibility_and_menu(app);
+            refresh_menu(app);
         }
         MENU_CFG_AUTOSTART_TAVERN => {
             if let Err(e) =
@@ -570,7 +546,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                         }) {
                             tracing::error!("保存开机自启状态失败: {}", e);
                         }
-                        sync_tray_visibility_and_menu(&handle);
+                        refresh_menu(&handle);
                     }
                     Err(e) => {
                         tracing::error!("切换开机自启失败: {}", e);
@@ -607,13 +583,6 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 /// 启动模式变更交给前端处理：公网模式需要二次风险确认，托盘弹不出模态框。
 fn request_launch_mode(app: &AppHandle, mode: &str) {
     emit(app, EVENT_TRAY_SET_LAUNCH_MODE, mode.to_string());
-}
-
-/// 托盘图标可见性可能随「启动时最小化 / 开机自启」开关变化，改完要一起同步
-fn sync_tray_visibility_and_menu(app: &AppHandle) {
-    let needs_tray = read_app_config_from_disk(app).needs_tray();
-    set_tray_visible(app, needs_tray);
-    refresh_menu(app);
 }
 
 fn emit<P: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: P) {

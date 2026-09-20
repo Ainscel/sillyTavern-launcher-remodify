@@ -110,8 +110,6 @@ pub struct AppConfig {
     /// 酒馆数据模式：global / local
     #[serde(default = "default_data_mode")]
     pub data_mode: String,
-    /// 关闭主窗口时最小化到系统托盘（true = 隐藏到托盘，false = 正常退出）
-    pub minimize_to_tray: bool,
     /// 开机自动启动本启动器（Windows 计划任务，登录时以最高权限静默启动，不弹 UAC）
     pub auto_start_launcher: bool,
     /// 启动时直接最小化到托盘（不显示主窗口）
@@ -122,16 +120,6 @@ pub struct AppConfig {
     pub auto_restart_tavern: bool,
     /// 是否发送 Windows 系统通知
     pub enable_notifications: bool,
-}
-
-impl AppConfig {
-    /// 是否需要常驻系统托盘图标。
-    ///
-    /// 只要存在「主窗口可能不可见」或「需要开机静默启动」的场景，就必须有托盘图标，
-    /// 否则用户将没有任何入口唤回窗口。
-    pub fn needs_tray(&self) -> bool {
-        self.minimize_to_tray || self.start_minimized || self.auto_start_launcher
-    }
 }
 
 fn default_data_mode() -> String {
@@ -199,7 +187,6 @@ impl Default for AppConfig {
             launch_mode: "normal".to_string(),
             network_proxy: NetworkProxyConfig::default(),
             data_mode: "global".to_string(),
-            minimize_to_tray: false,
             auto_start_launcher: false,
             start_minimized: false,
             auto_start_tavern: false,

@@ -42,7 +42,6 @@ import {
 } from '@phosphor-icons/vue'
 import globalConfig from '../lib/config'
 import { setTheme } from '../lib/theme'
-import { setMinimizeToTray } from '../lib/windowBehavior'
 import { configRevision } from '../lib/configSync'
 import { getSystemLocale } from '../lang'
 import { startOneClickSetup, updateOneClickMessage, simulateClickEffect } from '../lib/useOneClick'
@@ -90,7 +89,6 @@ interface AppConfig {
   useSystemGit: boolean
   launchMode: 'normal' | 'desktop' | 'lan' | 'public' | 'debug'
   dataMode: 'global' | 'local'
-  minimizeToTray: boolean
   /** 开机自动启动本启动器（Windows 计划任务，免 UAC） */
   autoStartLauncher: boolean
   /** 启动时直接最小化到托盘 */
@@ -160,7 +158,6 @@ const config = ref<AppConfig>({
   useSystemGit: true,
   launchMode: 'normal',
   dataMode: 'global',
-  minimizeToTray: false,
   autoStartLauncher: false,
   startMinimized: false,
   autoStartTavern: false,
@@ -693,14 +690,6 @@ watch(
   () => config.value.theme,
   newTheme => {
     setTheme(newTheme)
-  },
-)
-
-// 同步「关闭软件时最小化到托盘」到全局共享状态（供关闭窗口的逻辑同步读取）
-watch(
-  () => config.value.minimizeToTray,
-  newValue => {
-    setMinimizeToTray(newValue)
   },
 )
 
@@ -1414,33 +1403,6 @@ const testDirectConnection = async () => {
 
             <div class="w-full h-px bg-slate-100 dark:bg-slate-700"></div>
 
-            <!-- Minimize to Tray on Close -->
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-3">
-                <div
-                  class="w-8 h-8 rounded-lg bg-teal-50 dark:bg-teal-900/30 flex items-center justify-center text-teal-500"
-                >
-                  <PhTray :size="18" weight="duotone" />
-                </div>
-                <div>
-                  <div class="font-medium text-slate-700 dark:text-slate-300">
-                    {{ t('settings.minimizeToTray') }}
-                  </div>
-                  <div class="text-xs text-slate-500 dark:text-slate-400">
-                    {{ t('settings.minimizeToTrayDesc') }}
-                  </div>
-                </div>
-              </div>
-              <label class="inline-flex items-center cursor-pointer">
-                <input v-model="config.minimizeToTray" type="checkbox" class="sr-only peer" />
-                <div
-                  class="relative w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-500"
-                ></div>
-              </label>
-            </div>
-
-            <div class="w-full h-px bg-slate-100 dark:bg-slate-700"></div>
-
             <!-- Animations Toggle -->
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
@@ -1627,6 +1589,14 @@ const testDirectConnection = async () => {
             >
               <PhWarning :size="14" weight="fill" class="mt-0.5 shrink-0" />
               <span>{{ autostartMessage }}</span>
+            </div>
+
+            <div class="w-full h-px bg-slate-100 dark:bg-slate-700"></div>
+
+            <!-- 关闭行为说明：托盘图标已改为常驻，不存在开关 -->
+            <div class="flex items-start gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <PhInfo :size="14" weight="fill" class="mt-0.5 shrink-0 text-slate-400" />
+              <span>{{ t('settings.closeToTrayHint') }}</span>
             </div>
           </div>
         </section>

@@ -774,9 +774,8 @@ export default {
     languageAuto: 'Follow System',
     rememberWindow: 'Remember Window Position',
     rememberWindowDesc: 'Restore window position on next launch',
-    minimizeToTray: 'Minimize to Tray on Close',
-    minimizeToTrayDesc:
-      'When enabled, the close button hides the launcher to the system tray instead of quitting. Running tavern services and tasks are unaffected.',
+    closeToTrayHint:
+      'The tray icon is always present. Closing the main window (including from the Alt+Tab list) only hides it to the tray — the app keeps running, along with the tavern service and any task in progress. To actually quit, use "Quit" in the tray menu.',
     startupAndTray: 'Startup & Tray',
     autoStartLauncher: 'Start on Boot',
     autoStartLauncherDesc:
@@ -1000,5 +999,8 @@ export default {
     launchModeNeedRestart:
       'The launch mode only takes effect when the tavern starts. Restart the tavern now to apply it?',
     restartNow: 'Restart Now',
+    unavailableDesc:
+      'The system tray is currently unavailable. Hiding the window would leave no way to bring it back, so "close to tray" cannot be performed. Quit the application instead?',
+    quitAnyway: 'Quit Anyway',
   },
 }

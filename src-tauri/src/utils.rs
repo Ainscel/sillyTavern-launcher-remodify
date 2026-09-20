@@ -5,7 +5,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tracing_subscriber::{filter::EnvFilter, layer::SubscriberExt, Registry};
-use tauri::Manager;
 
 use crate::types::AppConfig;
 

@@ -34,7 +34,7 @@ import {
   setConsoleRouter,
 } from './lib/consoleState'
 import { initDownloadProgressListener } from './lib/useNodeGitInstall'
-import { minimizeToTray, setMinimizeToTray } from './lib/windowBehavior'
+import { hideToTray, quitApp, confirmQuitWithoutTray } from './lib/appClose'
 import { bumpConfigRevision } from './lib/configSync'
 import { getPreferredLanIpv4 } from './lib/networkUrl'
 import { Dialog } from './lib/useDialog'
@@ -56,7 +56,6 @@ const CONFIG_CACHE_KEY = 'app_settings_config_cache'
 const syncConfigFromBackend = async (): Promise<Record<string, unknown> | null> => {
   try {
     const cfg = await invoke<Record<string, unknown>>('get_app_config')
-    setMinimizeToTray(cfg?.minimizeToTray === true)
     const cached = localStorage.getItem(CONFIG_CACHE_KEY)
     const base = cached ? JSON.parse(cached) : {}
     localStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify({ ...base, ...cfg }))
@@ -202,31 +201,28 @@ onMounted(async () => {
   unlisteners.push(await listen('tray-copy-lan-url', () => void handleCopyLanUrl()))
   unlisteners.push(await listen<string>('tray-set-launch-mode', event => void handleSetLaunchMode(event.payload)))
 
-  // 拦截关闭窗口事件
+  // 关闭窗口一律改为隐藏到托盘，绝不退出程序。
+  //
+  // 标题栏的 X、Alt+Tab 窗口列表里的关闭、任务栏右键关闭、Alt+F4，
+  // 最终都会走到这个 onCloseRequested——放在 App.vue 而不是标题栏组件里，
+  // 就是为了把这些入口全部覆盖到。真正退出只认托盘菜单的「退出」。
   const appWindow = getCurrentWindow()
   appWindow.onCloseRequested(async event => {
-    // 开启「关闭软件时最小化到托盘」时，关闭请求会被标题栏转成隐藏窗口，
-    // 此时不应弹出「酒馆正在运行」的确认框，否则与最小化到托盘的预期冲突。
-    if (minimizeToTray.value) return
-
-    if (consoleStatus.value === 1 || consoleStatus.value === 2) {
-      event.preventDefault()
-
-      const yes = await confirm(t('home.tavernIsRunningCloseApp'), {
-        title: t('home.confirmClose'),
-        kind: 'warning',
-        okLabel: t('common.confirm'),
-        cancelLabel: t('common.cancel'),
-      })
-
-      if (yes) {
-        try {
-          await stopProcess()
-        } catch (_e) {}
-        await appWindow.destroy()
-      }
+    event.preventDefault()
+    // preventDefault 必须同步调用，隐藏则是异步的，所以顺序不能颠倒
+    const hidden = await hideToTray()
+    if (!hidden) {
+      // 托盘不可用：窗口藏起来就没有唤回入口了，只能让用户选择直接退出
+      confirmQuitWithoutTray()
     }
   })
+
+  // 托盘菜单「退出」：后端已先把窗口恢复出来，保证确认弹窗可见
+  unlisteners.push(
+    await listen('tray-quit-requested', () => {
+      void quitApp()
+    }),
+  )
 
   // 检查是否已经在运行
   try {

@@ -166,22 +166,26 @@ pub fn run() {
             // 「启动时最小化」或开机自启时不弹窗口，直接常驻托盘
             let hide_on_startup = startup_config.start_minimized || launched_by_autostart;
 
-            // 需要常驻托盘图标：关闭时最小化到托盘 / 启动时最小化 / 开机自启
-            if startup_config.needs_tray() || hide_on_startup {
-                if let Err(e) = tray::create_tray(&handle) {
-                    tracing::error!("创建系统托盘失败: {}", e);
-                }
+            // 托盘图标常驻：它是窗口被隐藏后唯一能唤回界面的入口
+            if let Err(e) = tray::create_tray(&handle) {
+                tracing::error!("创建系统托盘失败: {}", e);
             }
 
-            if hide_on_startup {
-                // 托盘没建出来就绝不能隐藏窗口，否则用户找不到任何入口唤回界面
-                if tray::is_tray_available(&handle) {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.hide();
-                    }
-                } else {
+            // 主窗口在 tauri.conf.json 里配置为 visible:false，由这里决定何时让它出现。
+            // 早先的做法是让窗口先显示、再在 setup 里 hide()，那样「启动时最小化」会先闪一下窗口。
+            let show_on_startup = !hide_on_startup || !tray::is_tray_available(&handle);
+            if show_on_startup {
+                if hide_on_startup {
+                    // 托盘没建出来就不能藏窗口，否则用户找不到任何入口唤回界面
                     tracing::warn!("系统托盘不可用，已取消启动时最小化，改为正常显示窗口");
                 }
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(e) = window.show() {
+                        tracing::error!("显示主窗口失败: {}", e);
+                    }
+                }
+            } else {
+                tracing::info!("启动时最小化到托盘");
             }
 
             // 监听主窗口关闭事件：主窗口关闭时强制关掉 sillytavern-desktop 子窗口

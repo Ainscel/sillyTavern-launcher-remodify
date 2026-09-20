@@ -1,5 +1,4 @@
 <script lang="ts" setup>
-import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   PhMinus,
@@ -15,120 +14,25 @@ import {
 } from '@phosphor-icons/vue'
 import config from '../lib/config'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
-import { installState, resetInstallState } from '../lib/useInstall'
-import { oneClickState, finishOneClickSetup } from '../lib/useOneClick'
-import { Dialog } from '../lib/useDialog'
 import { consoleStatus } from '../lib/consoleState'
-import { minimizeToTray } from '../lib/windowBehavior'
 
 const { t, locale } = useI18n()
 const appWindow = getCurrentWindow()
-let unlistenClose: (() => void) | null = null
-let unlistenTrayQuit: (() => void) | null = null
-let isForceClosing = false
 
 /**
- * 关闭窗口请求。
+ * 标题栏的关闭按钮。
  *
- * @param fromTray 是否由托盘菜单的「退出」发起。托盘退出是明确的退出意图，
- *                 因此跳过「最小化到托盘」分支，直接走完整退出流程。
+ * 这里只发出一个普通的「关闭窗口」请求，由 App.vue 的 onCloseRequested 统一
+ * 拦下来改成隐藏到托盘——标题栏按钮、Alt+Tab 窗口列表、任务栏右键关闭因此共用
+ * 同一条路径，不会出现某个入口漏掉、把程序整个关掉的情况。
  */
-const requestClose = async (fromTray = false) => {
-  if (isForceClosing) {
-    await appWindow.close()
-    return
-  }
-
-  // 开启「关闭软件时最小化到托盘」时，只隐藏窗口到托盘。
-  // 这里不触碰 stop_sillytavern，也不打断任何安装/下载任务，酒馆服务继续运行。
-  if (minimizeToTray.value && !fromTray) {
-    try {
-      await invoke('hide_main_window_to_tray')
-      return
-    } catch (e) {
-      // 托盘不可用时退回正常关闭流程，避免窗口隐藏后无法唤回
-      console.error('最小化到托盘失败，改为正常关闭:', e)
-    }
-  }
-
-  const isRunningTask =
-    (installState.show && ['downloading', 'extracting', 'installing', 'deleting'].includes(installState.status)) ||
-    oneClickState.isActive
-
-  if (isRunningTask) {
-    Dialog.warning({
-      title: t('common.warning'),
-      msg:
-        locale.value === 'zh-CN'
-          ? '自动化流程或安装任务正在进行中。强制关闭将中断所有进度并退回初始状态，确定要关闭吗？'
-          : 'Automation or installation tasks are running. Force closing will interrupt all progress and reset to the initial state. Are you sure you want to close?',
-      showCancel: true,
-      confirmText: locale.value === 'zh-CN' ? '确认关闭' : 'Force Close',
-      cancelText: t('common.cancel'),
-      onConfirm: async () => {
-        isForceClosing = true
-        // 停止后端任务
-        try {
-          await invoke('cancel_install')
-        } catch (e) {
-          console.error(e)
-        }
-        // 退回初始状态
-        resetInstallState()
-        if (oneClickState.isActive) {
-          finishOneClickSetup()
-        }
-
-        // 主动停止酒馆进程
-        try {
-          await invoke('stop_sillytavern')
-        } catch (e) {
-          console.error('Failed to stop sillytavern on close:', e)
-        }
-
-        await appWindow.close()
-      },
-    })
-  } else {
-    isForceClosing = true
-    // 主动停止酒馆进程
-    try {
-      await invoke('stop_sillytavern')
-    } catch (e) {
-      console.error('Failed to stop sillytavern on close:', e)
-    }
-    await appWindow.close()
-  }
+const requestClose = async () => {
+  await appWindow.close()
 }
 
 const minimize = async () => {
   await appWindow.minimize()
 }
-
-onMounted(async () => {
-  unlistenClose = await appWindow.onCloseRequested(async event => {
-    if (!isForceClosing) {
-      event.preventDefault()
-      requestClose()
-    }
-  })
-
-  // 托盘菜单「退出」：后端已先恢复窗口，这里执行完整关闭流程
-  unlistenTrayQuit = await listen('tray-quit-requested', () => {
-    requestClose(true)
-  })
-})
-
-onUnmounted(() => {
-  if (unlistenClose) {
-    unlistenClose()
-  }
-  if (unlistenTrayQuit) {
-    unlistenTrayQuit()
-  }
-})
 </script>
 
 <template>
