@@ -34,10 +34,16 @@ import {
   PhStar,
   PhHeart,
   PhTray,
+  PhPower,
+  PhPlay,
+  PhBell,
+  PhBrowser,
+  PhRocketLaunch,
 } from '@phosphor-icons/vue'
 import globalConfig from '../lib/config'
 import { setTheme } from '../lib/theme'
 import { setMinimizeToTray } from '../lib/windowBehavior'
+import { configRevision } from '../lib/configSync'
 import { getSystemLocale } from '../lang'
 import { startOneClickSetup, updateOneClickMessage, simulateClickEffect } from '../lib/useOneClick'
 import { gitInstallState, nodeInstallState, cancelGitInstall, cancelNodeInstall } from '../lib/useNodeGitInstall'
@@ -85,6 +91,16 @@ interface AppConfig {
   launchMode: 'normal' | 'desktop' | 'lan' | 'public' | 'debug'
   dataMode: 'global' | 'local'
   minimizeToTray: boolean
+  /** 开机自动启动本启动器（Windows 计划任务，免 UAC） */
+  autoStartLauncher: boolean
+  /** 启动时直接最小化到托盘 */
+  startMinimized: boolean
+  /** 启动器启动后自动拉起酒馆 */
+  autoStartTavern: boolean
+  /** 酒馆异常退出时自动重启 */
+  autoRestartTavern: boolean
+  /** 是否发送 Windows 系统通知 */
+  enableNotifications: boolean
   networkProxy: {
     mode: 'none' | 'system' | 'custom'
     host: string
@@ -145,6 +161,11 @@ const config = ref<AppConfig>({
   launchMode: 'normal',
   dataMode: 'global',
   minimizeToTray: false,
+  autoStartLauncher: false,
+  startMinimized: false,
+  autoStartTavern: false,
+  autoRestartTavern: false,
+  enableNotifications: true,
   networkProxy: {
     mode: 'none',
     host: '127.0.0.1',
@@ -683,6 +704,54 @@ watch(
   },
 )
 
+// ─── 开机自启（Windows 计划任务） ────────────────────────────────────────────
+// 开关的真实状态是「计划任务是否存在」，而不是配置里那个布尔值——
+// 用户可能在任务计划程序里手动删掉它。因此挂载时对账一次，
+// 切换时也以后端返回的实际结果为准，失败就把开关拨回去。
+const autostartBusy = ref(false)
+const autostartMessage = ref('')
+
+const syncAutostartState = async () => {
+  try {
+    const actual = await invoke<boolean>('get_autostart_enabled')
+    if (config.value.autoStartLauncher !== actual) {
+      isSyncing = true
+      config.value.autoStartLauncher = actual
+      await nextTick()
+      isSyncing = false
+    }
+  } catch (e) {
+    console.error('读取开机自启状态失败:', e)
+  }
+}
+
+const handleAutostartToggle = async (event: Event) => {
+  const enable = (event.target as HTMLInputElement).checked
+  if (autostartBusy.value) return
+
+  autostartBusy.value = true
+  autostartMessage.value = ''
+  try {
+    const actual = await invoke<boolean>('set_autostart_enabled', { enable })
+    isSyncing = true
+    config.value.autoStartLauncher = actual
+    await nextTick()
+    isSyncing = false
+    if (actual) {
+      toast.success(t('settings.autoStartLauncherOn'))
+    } else {
+      toast.success(t('settings.autoStartLauncherOff'))
+    }
+  } catch (e) {
+    // 常见原因是程序没有管理员权限，把后端的原始错误显示出来
+    autostartMessage.value = t('settings.autoStartLauncherFailed', { error: String(e) })
+    toast.error(t('settings.autoStartLauncherFailedSimple'))
+    await syncAutostartState()
+  } finally {
+    autostartBusy.value = false
+  }
+}
+
 onMounted(() => {
   loadConfig()
   fetchProxies()
@@ -767,6 +836,15 @@ onMounted(() => {
   checkGitBoth()
   checkElevation()
   checkSystemCpuCores()
+  // 必须等配置加载完再对账开机自启：两者都是异步 IPC，若配置后到，
+  // 会用配置里那个可能过期的值把刚从计划任务读到的真实状态覆盖掉。
+  void loadConfig().then(syncAutostartState)
+})
+
+// 托盘菜单可以改配置（启动模式、几个快捷开关），后端会广播变更。
+// 这里重新拉取一次，避免设置页用陈旧的内存副本在下次保存时把托盘的修改冲掉。
+watch(configRevision, () => {
+  void loadConfig()
 })
 
 const openLink = (url: string) => {
@@ -1315,7 +1393,7 @@ const testDirectConnection = async () => {
                 <div
                   class="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 flex items-center justify-center text-indigo-500"
                 >
-                  <PhBrowserWindow :size="18" weight="duotone" />
+                  <PhBrowser :size="18" weight="duotone" />
                 </div>
                 <div>
                   <div class="font-medium text-slate-700 dark:text-slate-300">
@@ -1386,6 +1464,169 @@ const testDirectConnection = async () => {
                   class="relative w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-pink-500"
                 ></div>
               </label>
+            </div>
+          </div>
+        </section>
+
+        <!-- Startup & Tray -->
+        <section class="space-y-4">
+          <h2 class="text-lg font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+            <PhRocketLaunch :size="20" class="text-violet-500" weight="duotone" />
+            {{ t('settings.startupAndTray') }}
+          </h2>
+
+          <div
+            class="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-4 shadow-sm"
+          >
+            <!-- Start on boot -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-8 h-8 rounded-lg bg-violet-50 dark:bg-violet-900/30 flex items-center justify-center text-violet-500"
+                >
+                  <PhPower :size="18" weight="duotone" />
+                </div>
+                <div>
+                  <div class="font-medium text-slate-700 dark:text-slate-300">
+                    {{ t('settings.autoStartLauncher') }}
+                  </div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">
+                    {{ t('settings.autoStartLauncherDesc') }}
+                  </div>
+                </div>
+              </div>
+              <label
+                class="inline-flex items-center"
+                :class="autostartBusy ? 'cursor-wait opacity-60' : 'cursor-pointer'"
+              >
+                <input
+                  :checked="config.autoStartLauncher"
+                  :disabled="autostartBusy"
+                  type="checkbox"
+                  class="sr-only peer"
+                  @change="handleAutostartToggle"
+                />
+                <div
+                  class="relative w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-violet-500"
+                ></div>
+              </label>
+            </div>
+
+            <div class="w-full h-px bg-slate-100 dark:bg-slate-700"></div>
+
+            <!-- Start minimized -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-8 h-8 rounded-lg bg-teal-50 dark:bg-teal-900/30 flex items-center justify-center text-teal-500"
+                >
+                  <PhTray :size="18" weight="duotone" />
+                </div>
+                <div>
+                  <div class="font-medium text-slate-700 dark:text-slate-300">
+                    {{ t('settings.startMinimized') }}
+                  </div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">
+                    {{ t('settings.startMinimizedDesc') }}
+                  </div>
+                </div>
+              </div>
+              <label class="inline-flex items-center cursor-pointer">
+                <input v-model="config.startMinimized" type="checkbox" class="sr-only peer" />
+                <div
+                  class="relative w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-teal-500"
+                ></div>
+              </label>
+            </div>
+
+            <div class="w-full h-px bg-slate-100 dark:bg-slate-700"></div>
+
+            <!-- Auto start tavern -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-8 h-8 rounded-lg bg-emerald-50 dark:bg-emerald-900/30 flex items-center justify-center text-emerald-500"
+                >
+                  <PhPlay :size="18" weight="duotone" />
+                </div>
+                <div>
+                  <div class="font-medium text-slate-700 dark:text-slate-300">
+                    {{ t('settings.autoStartTavern') }}
+                  </div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">
+                    {{ t('settings.autoStartTavernDesc') }}
+                  </div>
+                </div>
+              </div>
+              <label class="inline-flex items-center cursor-pointer">
+                <input v-model="config.autoStartTavern" type="checkbox" class="sr-only peer" />
+                <div
+                  class="relative w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-500"
+                ></div>
+              </label>
+            </div>
+
+            <div class="w-full h-px bg-slate-100 dark:bg-slate-700"></div>
+
+            <!-- Auto restart tavern -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-900/30 flex items-center justify-center text-amber-500"
+                >
+                  <PhArrowsClockwise :size="18" weight="duotone" />
+                </div>
+                <div>
+                  <div class="font-medium text-slate-700 dark:text-slate-300">
+                    {{ t('settings.autoRestartTavern') }}
+                  </div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">
+                    {{ t('settings.autoRestartTavernDesc') }}
+                  </div>
+                </div>
+              </div>
+              <label class="inline-flex items-center cursor-pointer">
+                <input v-model="config.autoRestartTavern" type="checkbox" class="sr-only peer" />
+                <div
+                  class="relative w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"
+                ></div>
+              </label>
+            </div>
+
+            <div class="w-full h-px bg-slate-100 dark:bg-slate-700"></div>
+
+            <!-- Notifications -->
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div
+                  class="w-8 h-8 rounded-lg bg-blue-50 dark:bg-blue-900/30 flex items-center justify-center text-blue-500"
+                >
+                  <PhBell :size="18" weight="duotone" />
+                </div>
+                <div>
+                  <div class="font-medium text-slate-700 dark:text-slate-300">
+                    {{ t('settings.enableNotifications') }}
+                  </div>
+                  <div class="text-xs text-slate-500 dark:text-slate-400">
+                    {{ t('settings.enableNotificationsDesc') }}
+                  </div>
+                </div>
+              </div>
+              <label class="inline-flex items-center cursor-pointer">
+                <input v-model="config.enableNotifications" type="checkbox" class="sr-only peer" />
+                <div
+                  class="relative w-11 h-6 bg-slate-200 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"
+                ></div>
+              </label>
+            </div>
+
+            <!-- 开机自启依赖计划任务且需要管理员权限，失败原因必须让用户看到 -->
+            <div
+              v-if="autostartMessage"
+              class="flex items-start gap-2 text-xs rounded-lg px-3 py-2 bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400"
+            >
+              <PhWarning :size="14" weight="fill" class="mt-0.5 shrink-0" />
+              <span>{{ autostartMessage }}</span>
             </div>
           </div>
         </section>

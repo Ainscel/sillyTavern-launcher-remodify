@@ -3223,6 +3223,266 @@ pub fn generate_default_settings_for_version(app: &AppHandle, version: &str) -> 
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 端口解析与占用检测
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 解析酒馆实际会使用的端口。
+///
+/// 端口取自真正生效的那份 config.yaml，而不是固定值：
+///   - global 数据模式：启动时显式传了 `--configPath <data>/st_data/config.yaml`
+///   - local  数据模式：不传参，酒馆读取自身目录下的 config.yaml
+fn resolve_tavern_port(app: &AppHandle) -> (u16, PathBuf) {
+    /// config.yaml 里没有 port 时酒馆自身的默认值
+    const FALLBACK: u16 = 8000;
+
+    let config = read_app_config_from_disk(app);
+
+    let data_dir = match get_config_path(app).parent() {
+        Some(p) => p.to_path_buf(),
+        None => PathBuf::from("."),
+    };
+    let st_dir = if config.sillytavern.version.path.is_empty() {
+        data_dir
+            .join("sillytavern")
+            .join(&config.sillytavern.version.version)
+    } else {
+        PathBuf::from(&config.sillytavern.version.path)
+    };
+
+    let cfg_path = if config.data_mode == "local" {
+        st_dir.join("config.yaml")
+    } else {
+        data_dir.join("st_data").join("config.yaml")
+    };
+
+    let port = std::fs::read_to_string(&cfg_path)
+        .ok()
+        .and_then(|content| parse_tavern_config_payload(&content).ok())
+        .map(|payload| payload.port)
+        .filter(|p| *p > 0 && *p <= u16::MAX as i64)
+        .map(|p| p as u16);
+
+    match port {
+        Some(p) => (p, cfg_path),
+        None => {
+            tracing::warn!(
+                "未能从 {} 解析端口，回退到默认值 {}",
+                cfg_path.display(),
+                FALLBACK
+            );
+            (FALLBACK, cfg_path)
+        }
+    }
+}
+
+/// 检查给定端口能否绑定（Rust 侧的快速判断，可能有误报）
+async fn port_bind_fails(port: u16) -> bool {
+    for addr in [format!("127.0.0.1:{port}"), format!("0.0.0.0:{port}")] {
+        if tokio::net::TcpListener::bind(&addr).await.is_err() {
+            return true;
+        }
+    }
+    false
+}
+
+/// 查询端口占用者：(PID, 进程名)。无人监听时返回 None。
+///
+/// 以 PowerShell 的结果为准——Rust 侧的 bind 试探在 Windows 上存在误报，
+/// 而这里顺带拿到进程名，用来判断是不是酒馆自己残留的 node 进程。
+#[cfg(target_os = "windows")]
+fn query_port_owner(port: u16) -> Option<(u32, String)> {
+    use std::os::windows::process::CommandExt;
+    let script = format!(
+        "$p = (Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue \
+                | Select-Object -First 1).OwningProcess; \
+         if ($p) {{ $n = (Get-Process -Id $p -ErrorAction SilentlyContinue).ProcessName; Write-Output \"$p|$n\" }}"
+    );
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().find(|l| l.contains('|'))?;
+    let (pid_str, name) = line.split_once('|')?;
+    let pid = pid_str.trim().parse::<u32>().ok()?;
+    Some((pid, name.trim().to_string()))
+}
+
+/// 非 Windows 平台退化为「按端口查不到归属」，直接放行
+#[cfg(not(target_os = "windows"))]
+fn query_port_owner(_port: u16) -> Option<(u32, String)> {
+    None
+}
+
+/// 强制结束进程树
+fn kill_process_tree(pid: u32) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string(), "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+    }
+}
+
+/// 启动前的端口占用处理。
+///
+/// 旧实现固定在 11451 上检测、且「无差别地杀掉占用者」，有两个问题：
+///   1. 用户在 config.yaml 里改过端口之后，检查的是错误的端口，真正的冲突反而检测不到；
+///   2. 一旦恰好有别的程序占着那个端口，会被直接 Stop-Process 杀掉——误杀无关进程。
+///
+/// 现在按真实端口检测，并且只在占用者确实是 node 进程（酒馆自己上次没退干净）时才回收；
+/// 其它情况一律报错让用户处理，不再擅自杀掉别人的程序。
+async fn ensure_port_available(app: &AppHandle, port: u16, cfg_path: &Path) -> Result<(), String> {
+    let lang = get_current_lang(app);
+
+    if !port_bind_fails(port).await {
+        return Ok(());
+    }
+
+    let port_for_query = port;
+    let owner = tokio::task::spawn_blocking(move || query_port_owner(port_for_query))
+        .await
+        .ok()
+        .flatten();
+
+    // 直接给出真实生效的 config.yaml 路径：local 数据模式下配置文件在酒馆目录里，
+    // 而「酒馆配置」页写的是 st_data 下那份，只说「去设置里改」用户会找不到地方。
+    let cfg_display = cfg_path.display();
+
+    match owner {
+        // 残留的酒馆 node 进程：回收后重试一次
+        Some((pid, name)) if name.eq_ignore_ascii_case("node") => {
+            tracing::warn!("端口 {} 被残留的 node 进程占用（PID {}），正在回收", port, pid);
+            let pid_for_kill = pid;
+            let _ = tokio::task::spawn_blocking(move || kill_process_tree(pid_for_kill)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+
+            if port_bind_fails(port).await {
+                return Err(match lang {
+                    Lang::ZhCn => format!("端口 {port} 仍被占用，请手动检查并关闭占用进程"),
+                    Lang::EnUs => format!(
+                        "Port {port} is still in use. Please check and close the process manually."
+                    ),
+                });
+            }
+            Ok(())
+        }
+
+        // 别的程序占着：只报错，不杀
+        Some((pid, name)) => Err(match lang {
+            Lang::ZhCn => format!(
+                "端口 {port} 已被其他程序占用（{name}，PID {pid}）。\
+                 请修改配置文件 {cfg_display} 中的 port 后重试，或先关闭该程序"
+            ),
+            Lang::EnUs => format!(
+                "Port {port} is occupied by another program ({name}, PID {pid}). \
+                 Change `port` in {cfg_display}, or close that program first."
+            ),
+        }),
+
+        // PowerShell 说没有人监听：多半是 bind 试探误报，放行让酒馆自己去绑
+        None => {
+            tracing::warn!("端口 {} 的 bind 试探失败，但未查到监听进程，按空闲处理", port);
+            Ok(())
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 就绪探测
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 探测单个端口是否有服务在监听
+async fn tcp_probe(port: u16) -> bool {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    matches!(
+        tokio::time::timeout(
+            tokio::time::Duration::from_millis(800),
+            tokio::net::TcpStream::connect(addr)
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// 酒馆就绪探测：轮询真实端口，直到能连上为止。
+///
+/// 旧实现靠抓 stdout 里的 URL / "listening on" 来判断启动成功，问题有二：
+///   - 日志措辞一变就抓不到，桌面模式的子窗口不会弹出；
+///   - 前端匹配的是英文字符串，中文语言环境下判断不出「运行中」。
+/// 改成对端口做 TCP 探测后，判定结果与语言、日志格式都无关。
+///
+/// `config_port` 来自 config.yaml，`discovered_port` 是 stdout 里解析到的端口
+/// （两者不一致时以实际输出为准），两个候选都会尝试。
+async fn probe_tavern_ready(
+    app: AppHandle,
+    config_port: u16,
+    discovered_port: std::sync::Arc<std::sync::atomic::AtomicU16>,
+    child_pid: std::sync::Arc<tokio::sync::Mutex<Option<u32>>>,
+    mode: String,
+) {
+    use std::sync::atomic::Ordering;
+
+    const TIMEOUT_SECS: u64 = 120;
+    const INTERVAL_MS: u64 = 500;
+
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(TIMEOUT_SECS);
+
+    loop {
+        // 进程已经退出就没必要继续等了，交给 process-exit 去走异常处理
+        if child_pid.lock().await.is_none() {
+            tracing::info!("酒馆进程已退出，停止就绪探测");
+            return;
+        }
+
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("酒馆就绪探测超时（{} 秒）", TIMEOUT_SECS);
+            let _ = app.emit("tavern-ready-timeout", ());
+            return;
+        }
+
+        let extra = discovered_port.load(Ordering::SeqCst);
+        let mut candidates = vec![config_port];
+        if extra > 0 && extra != config_port {
+            candidates.push(extra);
+        }
+
+        for port in candidates {
+            if tcp_probe(port).await {
+                tracing::info!("酒馆已就绪，端口 {}", port);
+                crate::tray::set_port(&app, port);
+                let payload = serde_json::json!({
+                    "url": format!("http://localhost:{}", port),
+                    "port": port,
+                    "mode": mode,
+                });
+                let _ = app.emit("tavern-ready", payload);
+                return;
+            }
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(INTERVAL_MS)).await;
+    }
+}
+
 #[tauri::command]
 pub async fn start_sillytavern(
     app: AppHandle,
@@ -3237,85 +3497,16 @@ pub async fn start_sillytavern(
         };
     }
 
-    // 检查端口是否被占用 (默认端口 11451)
-    let port = 11451u16;
-    let ipv4_addr = format!("127.0.0.1:{}", port);
-    let ipv6_addr = format!("[::]:{}", port);
-
-    let port_in_use = match tokio::net::TcpListener::bind(&ipv6_addr).await {
-        Ok(listener) => {
-            drop(listener);
-            false
-        }
-        Err(_) => true,
-    } || match tokio::net::TcpListener::bind(&ipv4_addr).await {
-        Ok(listener) => {
-            drop(listener);
-            false
-        }
-        Err(_) => true,
-    };
-
-    if port_in_use {
-        // 端口被占用,尝试停止可能残留的进程
-        tracing::warn!(
-            "Port {} is in use, trying to cleanup existing process",
-            port
-        );
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            let mut cmd = std::process::Command::new("powershell");
-            cmd.args(["-Command", &format!("Get-NetTCPConnection -LocalPort {} -ErrorAction SilentlyContinue | ForEach-Object {{ Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }}", port)])
-               .creation_flags(0x08000000);
-            let _ = cmd.output();
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = std::process::Command::new("sh")
-                .args([
-                    "-c",
-                    &format!("lsof -ti:{} | xargs kill -9 2>/dev/null || true", port),
-                ])
-                .output();
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = std::process::Command::new("sh")
-                .args([
-                    "-c",
-                    &format!("lsof -ti:{} | xargs kill -9 2>/dev/null || true", port),
-                ])
-                .output();
-        }
-
-        // 等待一下让进程终止
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-        // 再次检查端口
-        let still_in_use = match tokio::net::TcpListener::bind(&ipv6_addr).await {
-            Ok(listener) => {
-                drop(listener);
-                false
-            }
-            Err(_) => true,
-        } || match tokio::net::TcpListener::bind(&ipv4_addr).await {
-            Ok(listener) => {
-                drop(listener);
-                false
-            }
-            Err(_) => true,
-        };
-
-        if still_in_use {
-            return match lang {
-                Lang::ZhCn => Err(format!("端口 {} 仍被占用,请手动检查并关闭占用进程", port)),
-                Lang::EnUs => Err(format!(
-                    "Port {} is still in use. Please check and close the process manually.",
-                    port
-                )),
-            };
-        }
+    // ─── 端口预检 ────────────────────────────────────────────────────────────
+    // 使用酒馆实际生效的 config.yaml 端口，而不是写死的默认值
+    let (tavern_port, tavern_cfg_path) = resolve_tavern_port(&app);
+    tracing::info!(
+        "酒馆实际监听端口: {} (配置: {})",
+        tavern_port,
+        tavern_cfg_path.display()
+    );
+    if let Err(e) = ensure_port_available(&app, tavern_port, &tavern_cfg_path).await {
+        return Err(e);
     }
 
     let config = read_app_config_from_disk(&app);
@@ -3839,52 +4030,39 @@ console.log('[GitHub Proxy] URL interceptor loaded, proxy:', PROXY_URL);
     let stdout = child.stdout.take().ok_or("无法获取标准输出")?;
     let stderr = child.stderr.take().ok_or("无法获取标准错误")?;
 
-    let is_desktop_mode = launch_mode == "desktop";
-    let is_network_mode = launch_mode == "lan" || launch_mode == "public";
-    let network_mode_str = launch_mode.to_string();
+    // stdout 里解析到的实际端口，作为就绪探测的补充候选
+    let discovered_port = std::sync::Arc::new(std::sync::atomic::AtomicU16::new(0));
+
+    // 就绪探测：轮询真实端口，取代原先「抓日志字符串」的判断方式
+    tokio::spawn(probe_tavern_ready(
+        app.clone(),
+        tavern_port,
+        discovered_port.clone(),
+        state.inner().child_pid.clone(),
+        launch_mode.to_string(),
+    ));
 
     let app1 = app.clone();
+    let discovered_for_reader = discovered_port.clone();
     tokio::spawn(async move {
+        use std::sync::atomic::Ordering;
         let mut reader = BufReader::new(stdout).lines();
-        // 用于防止重复触发
-        let mut desktop_window_opened = false;
-        let mut network_port_sent = false;
         while let Ok(Some(line)) = reader.next_line().await {
             tracing::info!("ST_STDOUT: {}", line);
             let _ = app1.emit("process-log", format!("INFO: {}", line));
 
-            // 桌面程序模式：检测酒馆启动成功后输出的访问地址
-            if is_desktop_mode && !desktop_window_opened {
-                let url_opt = extract_tavern_url(&line);
-                if let Some(url) = url_opt {
-                    tracing::info!("桌面模式检测到酒馆地址: {}", url);
-                    desktop_window_opened = true;
-                    let _ = app1.emit("tavern-desktop-ready", url);
-                }
-            }
-
-            // 局域网/公网服务模式：提取端口，通知前端显示二维码弹窗
-            if is_network_mode && !network_port_sent {
-                let url_opt = extract_tavern_url(&line);
-                if let Some(url) = url_opt {
-                    // 提取端口号
-                    let port = url
+            // 日志里只取「实际端口」这一个信息，取到之前每行都尝试解析；
+            // 其余「是否就绪」的判断统一交给 probe_tavern_ready。
+            if discovered_for_reader.load(Ordering::SeqCst) == 0 {
+                if let Some(url) = extract_tavern_url(&line) {
+                    if let Some(port) = url
                         .rsplit(':')
                         .next()
                         .and_then(|p| p.trim_end_matches('/').parse::<u16>().ok())
-                        .unwrap_or(8000);
-                    tracing::info!(
-                        "网络服务模式（{}）检测到酒馆端口: {}",
-                        network_mode_str,
-                        port
-                    );
-                    network_port_sent = true;
-                    // 发送事件：{mode: "lan"|"public", port: 8000}
-                    let payload = serde_json::json!({
-                        "mode": network_mode_str,
-                        "port": port,
-                    });
-                    let _ = app1.emit("tavern-network-ready", payload);
+                    {
+                        tracing::info!("从酒馆输出解析到端口: {}", port);
+                        discovered_for_reader.store(port, Ordering::SeqCst);
+                    }
                 }
             }
         }
@@ -3998,8 +4176,13 @@ console.log('[GitHub Proxy] URL interceptor loaded, proxy:', PROXY_URL);
         }
         *kill_tx_arc.lock().await = None;
         *child_pid_arc.lock().await = None;
+        // 托盘图标切回「已停止」，同时收起仅运行中可见的菜单项
+        crate::tray::set_running(&app3, false);
         let _ = app3.emit("process-exit", ());
     });
+
+    // 进程已登记，托盘图标切到「运行中」
+    crate::tray::set_running(&app, true);
 
     Ok(())
 }

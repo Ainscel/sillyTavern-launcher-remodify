@@ -502,6 +502,16 @@ export default {
     missingDepDetected: 'Runtime missing packages detected: {packages}. Auto-repairing...',
     missingDepRepaired: 'Missing packages repaired. Auto-restarting SillyTavern...',
     missingDepRepairFailed: 'Failed to repair missing packages: {error}',
+    // Readiness probe & auto-restart
+    tavernReady: 'Tavern service is ready (port {port})',
+    readyTimeout:
+      'Timed out waiting for the tavern service to become ready. It may have failed to start — check the console log.',
+    notifyReadyTitle: 'Tavern started',
+    notifyReadyBody: 'Tavern is ready at {url}',
+    notifyAbnormalTitle: 'Tavern exited abnormally',
+    autoRestartScheduled: 'Restarting automatically in {seconds}s (attempt {attempt}/{max})',
+    autoRestartGaveUp:
+      'The tavern failed to start {count} times in a row. Auto-restart stopped — please check manually.',
   },
   tools: {
     title: 'Small Tools',
@@ -767,6 +777,24 @@ export default {
     minimizeToTray: 'Minimize to Tray on Close',
     minimizeToTrayDesc:
       'When enabled, the close button hides the launcher to the system tray instead of quitting. Running tavern services and tasks are unaffected.',
+    startupAndTray: 'Startup & Tray',
+    autoStartLauncher: 'Start on Boot',
+    autoStartLauncherDesc:
+      'Launch this launcher automatically after you sign in to Windows. Registered as a scheduled task, so no UAC prompt appears.',
+    autoStartLauncherOn: 'Start on boot enabled',
+    autoStartLauncherOff: 'Start on boot disabled',
+    autoStartLauncherFailedSimple: 'Failed to change start-on-boot. Try running this program as administrator.',
+    autoStartLauncherFailed: 'Failed to change start-on-boot: {error}',
+    startMinimized: 'Start Minimized to Tray',
+    startMinimizedDesc:
+      'Do not show the main window on launch — stay in the system tray. Best used together with start on boot.',
+    autoStartTavern: 'Auto-start Tavern on Launch',
+    autoStartTavernDesc: 'Start the tavern service automatically once the launcher is running.',
+    autoRestartTavern: 'Auto-restart on Abnormal Exit',
+    autoRestartTavernDesc:
+      'Restart the tavern automatically if it crashes. Gives up after 3 consecutive failures to avoid an infinite restart loop.',
+    enableNotifications: 'System Notifications',
+    enableNotificationsDesc: 'Send a Windows notification when the tavern starts, exits abnormally, or restarts.',
     scanCpuCores: 'Scan CPU Cores',
     scanCpuCoresDesc: 'Number of CPU threads allocated for full disk scan',
     scanCpuCoresAuto: 'Auto (Reserve half to prevent freezing)',
@@ -962,5 +990,15 @@ export default {
     interfaceDisplayPrefix: 'Adapter',
     selectedInterface: 'Selected interface',
     interfaceCount: '{count} interfaces detected',
+  },
+  tray: {
+    notRunning: 'The tavern is not running',
+    openFailed: 'Failed to open the tavern page',
+    copyFailed: 'Copy failed, please try again',
+    lanUrlCopied: 'LAN address copied: {url}',
+    launchModeChanged: 'Tavern launch mode switched to "{mode}"',
+    launchModeNeedRestart:
+      'The launch mode only takes effect when the tavern starts. Restart the tavern now to apply it?',
+    restartNow: 'Restart Now',
   },
 }

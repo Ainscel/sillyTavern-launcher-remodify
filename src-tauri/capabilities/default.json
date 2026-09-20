@@ -24,6 +24,7 @@
     "process:default",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-text",
+    "notification:default",
     "core:event:allow-listen",
     "core:event:allow-unlisten"
   ]

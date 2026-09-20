@@ -2,6 +2,12 @@
 
     !macro NSIS_HOOK_PREUNINSTALL
 
+    ; 移除「开机自动启动」计划任务。
+    ; 任务名必须与 src-tauri/src/config.rs 中的 AUTOSTART_TASK_NAME 保持一致。
+    ; 这里不依赖用户对下面「是否删除数据」的选择：任务若残留，会指向已被删除的 exe。
+    DetailPrint "正在移除开机自启计划任务..."
+    ExecWait '"$SYSDIR\schtasks.exe" /Delete /TN "SillyTavern Launcher GUI" /F'
+
     !ifdef LANG_SIMPCHINESE
         !define DeleteDataQuestion_CN "是否同时删除所有用户数据？$\n$\n包括：SillyTavern 版本、配置文件、日志等$\n$\n选择【是】将永久删除所有数据（不可恢复）$\n选择【否】将保留数据以便重新安装"
     !endif

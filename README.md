@@ -48,6 +48,10 @@
 | 🎨 **主题切换**     | 深色 / 浅色主题，支持跟随系统                                  |
 | 🔧 **GitHub 代理**  | 内置多节点代理加速，解决 GitHub 下载慢的问题                   |
 | 💾 **窗口记忆**     | 可选记住上次窗口位置                                           |
+| 🖥️ **系统托盘**     | 托盘右键快捷启停酒馆、打开网页、复制局域网网址、切换启动模式与常用开关；图标随运行状态变化 |
+| ⏰ **开机自启**     | 以 Windows 计划任务注册（免 UAC 弹窗），可配合「启动时最小化到托盘」静默常驻    |
+| 🔁 **异常自动重启** | 酒馆意外崩溃时自动重启，带次数上限与指数退避，避免陷入无限重启                |
+| 🔔 **系统通知**     | 酒馆启动成功（仅手动启动时）、异常退出、自动重启时发送 Windows 通知          |
 
 ---
 
@@ -361,6 +365,10 @@ lib.rs            ← 模块声明与 run()
 | 🎨 **Themes**            | Dark / Light mode with system follow support                             |
 | 🔧 **GitHub Proxy**      | Built-in multi-node acceleration for GitHub downloads                    |
 | 💾 **Window Memory**     | Optionally remember last window position                                 |
+| 🖥️ **System Tray**       | Right-click to start/stop the tavern, open it, copy the LAN URL, and switch launch mode & common toggles; icon reflects running state |
+| ⏰ **Start on Boot**     | Registered as a Windows scheduled task (no UAC prompt); pair with "start minimized to tray" to stay quiet |
+| 🔁 **Auto-restart**      | Restarts the tavern after an unexpected crash, with attempt cap and exponential backoff to avoid a restart loop |
+| 🔔 **Notifications**     | Windows notifications on start (manual only), abnormal exit, and auto-restart |
 
 ---
 

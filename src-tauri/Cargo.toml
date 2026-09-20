@@ -19,7 +19,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # tray-icon：系统托盘支持（「关闭软件时最小化到托盘」功能依赖）
-tauri = { version = "2", features = ["tray-icon"] }
+# image-ico / image-png：托盘运行状态图标需要运行时解码 icon-running.ico
+# （其余图标由 tauri-build 预编译成裸 RGBA，不需要解码器）。
+# icon-running.ico 的帧是 PNG 压缩存放的，同时打开 image-png 才能解出来。
+tauri = { version = "2", features = ["tray-icon", "image-ico", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-http = "2"
@@ -41,6 +44,7 @@ tracing-appender = "0.2.4"
 tauri-plugin-log = "2"
 tauri-plugin-process = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-notification = "2"
 sys-locale = "0.3.2"
 libc = "0.2.183"
 walkdir = "2.5.0"

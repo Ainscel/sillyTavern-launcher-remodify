@@ -90,6 +90,7 @@ fn resolve_app_working_dir(app: &tauri::AppHandle) -> PathBuf {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -158,10 +159,28 @@ pub fn run() {
             apply_saved_window_position(&handle);
             setup_window_position_tracking(&handle);
 
-            // 上次退出前若开启了「关闭软件时最小化到托盘」，启动时直接常驻托盘图标
-            if read_app_config_from_disk(&handle).minimize_to_tray {
+            let startup_config = read_app_config_from_disk(&handle);
+            // 由开机自启计划任务拉起时带 --autostart 参数
+            let launched_by_autostart =
+                std::env::args().any(|arg| arg == crate::config::AUTOSTART_ARG);
+            // 「启动时最小化」或开机自启时不弹窗口，直接常驻托盘
+            let hide_on_startup = startup_config.start_minimized || launched_by_autostart;
+
+            // 需要常驻托盘图标：关闭时最小化到托盘 / 启动时最小化 / 开机自启
+            if startup_config.needs_tray() || hide_on_startup {
                 if let Err(e) = tray::create_tray(&handle) {
                     tracing::error!("创建系统托盘失败: {}", e);
+                }
+            }
+
+            if hide_on_startup {
+                // 托盘没建出来就绝不能隐藏窗口，否则用户找不到任何入口唤回界面
+                if tray::is_tray_available(&handle) {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                } else {
+                    tracing::warn!("系统托盘不可用，已取消启动时最小化，改为正常显示窗口");
                 }
             }
 
@@ -199,6 +218,11 @@ pub fn run() {
             config::test_github_multi,
             config::test_download_speed,
             config::get_system_proxy_info,
+            // 开机自启（Windows 计划任务）
+            config::get_autostart_enabled,
+            config::set_autostart_enabled,
+            config::is_autostart_launch,
+            config::set_launch_mode,
             // Node.js / npm
             node::check_nodejs,
             node::check_nodejs_both,

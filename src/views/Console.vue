@@ -323,7 +323,7 @@ const handleOpenUrl = async (url: string) => {
                 ? 'text-slate-500 bg-[#2a2d3d]'
                 : 'text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20'
             "
-            @click="startProcess"
+            @click="() => startProcess()"
           >
             <Play class="w-3.5 h-3.5 fill-current" />
             {{ t('console.start') }}

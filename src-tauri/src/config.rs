@@ -148,9 +148,45 @@ pub fn write_app_config_to_disk(app: &AppHandle, config: &AppConfig) -> Result<(
     }
     let content = serde_json::to_string_pretty(config)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
-    fs::write(&config_path, content).map_err(|e| format!("Failed to write config file: {}", e))?;
+
+    // 先写临时文件、再原子替换。
+    // 直接 fs::write 一旦在写入过程中崩溃或断电，config.json 会变成截断的半个 JSON；
+    // 而 read_app_config_from_disk 解析失败时会静默回退到 AppConfig::default()，
+    // 表现为「所有设置莫名其妙被重置」。改走 tmp + rename 后，最坏情况也只是沿用上一份配置。
+    let tmp_path = config_path.with_extension("json.tmp");
+    fs::write(&tmp_path, content).map_err(|e| format!("Failed to write config file: {}", e))?;
+
+    // 替换前留一份上一版配置，便于损坏后人工恢复
+    if config_path.exists() {
+        let _ = fs::copy(&config_path, config_path.with_extension("json.bak"));
+    }
+
+    fs::rename(&tmp_path, &config_path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("Failed to replace config file: {}", e)
+    })?;
     Ok(())
 }
+
+/// 读盘 → 修改 → 落盘。供托盘等后端侧改配置的场景使用，避免各自手写一遍。
+///
+/// 修改后会广播 `config-changed`，让前端 Settings 页刷新自己的内存副本，
+/// 否则用户下次在设置页改动任意开关时，会用陈旧的整份配置把这里的修改覆盖掉。
+pub fn update_app_config<F>(app: &AppHandle, mutate: F) -> Result<AppConfig, String>
+where
+    F: FnOnce(&mut AppConfig),
+{
+    let mut config = read_app_config_from_disk(app);
+    mutate(&mut config);
+    write_app_config_to_disk(app, &config)?;
+
+    use tauri::Emitter;
+    let _ = app.emit(EVENT_CONFIG_CHANGED, ());
+    Ok(config)
+}
+
+/// 事件名：后端侧修改了配置文件，前端需要重新拉取
+pub const EVENT_CONFIG_CHANGED: &str = "app-config-changed";
 
 // ─────────────────────────────────────────────
 // 窗口位置
@@ -267,19 +303,182 @@ pub async fn get_app_config(app: AppHandle) -> Result<AppConfig, String> {
 pub async fn save_app_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
     let app_clone = app.clone();
     // 需要在 config 被 move 进闭包前取出
-    let minimize_to_tray = config.minimize_to_tray;
+    let needs_tray = config.needs_tray();
     tokio::task::spawn_blocking(move || write_app_config_to_disk(&app_clone, &config))
         .await
         .map_err(|e| e.to_string())??;
 
     // 配置落盘成功后同步托盘图标可见性，保证「设置项」与「实际行为」始终一致
-    crate::tray::set_tray_visible(&app, minimize_to_tray);
+    crate::tray::set_tray_visible(&app, needs_tray);
+    // 启动模式 / 快捷开关可能变了，重建托盘菜单让勾选状态跟上
+    crate::tray::refresh_menu(&app);
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_app_version(app: AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+// ─────────────────────────────────────────────
+// 开机自启（Windows 计划任务）
+// ─────────────────────────────────────────────
+//
+// 不使用 HKCU\...\Run 注册表项：本程序的 manifest 是 requestedExecutionLevel="highestAvailable"，
+// 管理员账户下该级别等同于「要求管理员权限」，走 Run 键会在每次开机时弹一次 UAC 确认框。
+// 计划任务以 RunLevel=Highest + LogonType=Interactive 注册后，登录时静默启动、不弹 UAC。
+
+/// 计划任务名称。与卸载钩子（src-tauri/installer/hooks.nsh）中清理的任务名必须一致。
+pub const AUTOSTART_TASK_NAME: &str = "SillyTavern Launcher GUI";
+
+/// 由计划任务拉起时附加的命令行参数，主进程据此判断「本次是开机自启」
+pub const AUTOSTART_ARG: &str = "--autostart";
+
+/// 把字符串转义成 PowerShell 单引号字面量
+#[cfg(target_os = "windows")]
+fn ps_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(target_os = "windows")]
+fn powershell(script: &str) -> Result<std::process::Output, String> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
+        // CREATE_NO_WINDOW：避免闪出黑色控制台窗口
+        .creation_flags(0x0800_0000)
+        .output()
+        .map_err(|e| format!("启动 PowerShell 失败: {e}"))
+}
+
+/// 查询计划任务当前是否已注册
+#[cfg(target_os = "windows")]
+pub fn autostart_task_exists() -> bool {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("schtasks")
+        .args(["/Query", "/TN", AUTOSTART_TASK_NAME])
+        .creation_flags(0x0800_0000)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn autostart_task_exists() -> bool {
+    false
+}
+
+/// 注册/移除开机自启计划任务，返回操作后任务的实际存在状态。
+///
+/// 失败时（通常是未提权）返回 Err，调用方可以据此提示用户以管理员身份重启。
+pub fn apply_autostart(enable: bool) -> Result<bool, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enable;
+        return Err("开机自启仅支持 Windows".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if !enable {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("schtasks")
+                .args(["/Delete", "/TN", AUTOSTART_TASK_NAME, "/F"])
+                .creation_flags(0x0800_0000)
+                .output();
+            return Ok(autostart_task_exists());
+        }
+
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("无法获取程序路径: {e}"))?
+            .to_string_lossy()
+            .to_string();
+
+        // ExecutionTimeLimit 默认是 72 小时，不显式清零的话任务会在三天后把启动器杀掉；
+        // AllowStartIfOnBatteries 保证笔记本用电池时也能自启。
+        let script = format!(
+            "$ErrorActionPreference='Stop'; \
+             $action = New-ScheduledTaskAction -Execute {exe} -Argument {arg}; \
+             $trigger = New-ScheduledTaskTrigger -AtLogOn -User \"$env:USERDOMAIN\\$env:USERNAME\"; \
+             $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries \
+                         -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew; \
+             $principal = New-ScheduledTaskPrincipal -UserId \"$env:USERDOMAIN\\$env:USERNAME\" \
+                          -LogonType Interactive -RunLevel Highest; \
+             Register-ScheduledTask -TaskName {task} -Action $action -Trigger $trigger \
+                          -Settings $settings -Principal $principal -Force | Out-Null",
+            exe = ps_quote(&exe),
+            arg = ps_quote(AUTOSTART_ARG),
+            task = ps_quote(AUTOSTART_TASK_NAME),
+        );
+
+        let output = powershell(&script)?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if stderr.is_empty() { stdout } else { stderr };
+            return Err(if detail.is_empty() {
+                "注册计划任务失败，请尝试以管理员身份运行本程序".to_string()
+            } else {
+                format!("注册计划任务失败: {detail}")
+            });
+        }
+
+        Ok(autostart_task_exists())
+    }
+}
+
+#[tauri::command]
+pub async fn get_autostart_enabled() -> Result<bool, String> {
+    tokio::task::spawn_blocking(autostart_task_exists)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_autostart_enabled(app: AppHandle, enable: bool) -> Result<bool, String> {
+    let result = tokio::task::spawn_blocking(move || apply_autostart(enable))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 无论成功与否都刷新托盘菜单，让勾选状态与真实情况一致
+    crate::tray::refresh_menu(&app);
+    match result {
+        Ok(actual) => Ok(actual),
+        Err(e) => Err(e),
+    }
+}
+
+/// 本次进程是否由开机自启计划任务拉起
+#[tauri::command]
+pub fn is_autostart_launch() -> bool {
+    std::env::args().any(|arg| arg == AUTOSTART_ARG)
+}
+
+// ─────────────────────────────────────────────
+// 酒馆启动模式
+// ─────────────────────────────────────────────
+
+/// 直接改写启动模式。
+///
+/// 托盘菜单选模式时用：`save_app_config` 要求前端提交整份配置，
+/// 而托盘侧只需要改这一个字段，走读-改-写更不容易把别的改动冲掉。
+/// 变更会广播 `app-config-changed`，设置页据此刷新内存副本。
+#[tauri::command]
+pub async fn set_launch_mode(app: AppHandle, mode: String) -> Result<(), String> {
+    let app_clone = app.clone();
+    tokio::task::spawn_blocking(move || update_app_config(&app_clone, |c| c.launch_mode = mode))
+        .await
+        .map_err(|e| e.to_string())??;
+
+    crate::tray::refresh_menu(&app);
+    Ok(())
 }
 
 #[tauri::command]
